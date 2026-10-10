@@ -1,0 +1,52 @@
+<%- include('partials/head', { title: `Participant ${participant.participant_id}` }) %>
+<div class="page-center wide">
+  <div class="card">
+    <h1>Participant <%= participant.participant_id %></h1>
+    <p class="sub">Recorded <%= new Date(participant.created_at).toISOString().slice(0, 16).replace('T', ' ') %></p>
+
+    <div class="info-grid">
+      <div><div class="label">Age</div><%= participant.age %></div>
+      <div><div class="label">Device</div><%= participant.device %></div>
+      <div><div class="label">Vision group</div><%= participant.vision_group %></div>
+      <div><div class="label">Tasks recorded</div><%= responses.length %> / 18</div>
+    </div>
+
+    <table class="table">
+      <thead><tr><th>#</th><th>Task</th><th>Response</th><th>Result</th><th>Time</th></tr></thead>
+      <tbody>
+        <% responses.forEach(r => { %>
+          <tr>
+            <td><%= r.task_number %></td>
+            <td><%= r.task_name %></td>
+            <td><%= r.response || '—' %></td>
+            <td>
+              <% if (r.skipped) { %><span class="skip">Skipped</span>
+              <% } else if (r.correct === null) { %>—
+              <% } else if (r.correct) { %><span class="ok">Correct</span>
+              <% } else { %><span class="no">Incorrect</span><% } %>
+            </td>
+            <td><%= r.duration_ms ? (r.duration_ms / 1000).toFixed(1) + 's' : '—' %></td>
+          </tr>
+        <% }); %>
+      </tbody>
+    </table>
+
+    <div class="actions">
+      <a href="/export/excel/participant/<%= participant.id %>" class="btn green">📗 Excel</a>
+      <a href="/export/participant/<%= participant.id %>" class="btn primary">📄 CSV</a>
+      <a href="/data" class="btn secondary">← Back</a>
+      <button onclick="del()" class="btn danger">🗑 Delete</button>
+    </div>
+  </div>
+</div>
+
+<script>
+function del() {
+  if (!confirm('Delete this participant? Can be restored from the database.')) return;
+  fetch('/api/delete_participant/<%= participant.id %>', { method: 'POST' })
+    .then((r) => r.json())
+    .then((d) => { if (d.ok) location.href = '/data'; })
+    .catch(() => alert('Delete failed.'));
+}
+</script>
+<%- include('partials/footer') %>

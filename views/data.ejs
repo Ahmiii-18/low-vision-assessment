@@ -1,0 +1,104 @@
+<%- include('partials/head', { title: 'Data Viewer' }) %>
+<div class="container">
+  <div class="header">
+    <div>
+      <h1>📊 Data Viewer <% if (liveEnabled) { %><span class="live-dot" id="liveDot"></span><% } %></h1>
+      <div class="sub" id="subLine"><%= totalParticipants %> participant<%= totalParticipants === 1 ? '' : 's' %> recorded</div>
+      <div id="statsLine"></div>
+    </div>
+    <div class="actions">
+      <button class="btn-icon" onclick="toggleTheme()" title="Toggle dark mode">🌓</button>
+      <a href="/export/excel" class="btn green">📗 Excel</a>
+      <a href="/export" class="btn primary">📄 Long CSV</a>
+      <a href="/export/wide" class="btn primary">📊 Wide CSV</a>
+      <a href="/" class="btn secondary">+ New</a>
+    </div>
+  </div>
+
+  <div id="liveFeed" class="live-feed"></div>
+
+  <% if (rows.length > 0) { %>
+    <div class="toolbar">
+      <input type="search" id="searchBox" placeholder="Search participant ID, device, vision group…">
+    </div>
+
+    <div class="card">
+      <div class="table-wrap">
+        <table id="dataTable" class="table">
+          <thead>
+            <tr>
+              <th data-key="participant_id">Participant ID <span class="arrow"></span></th>
+              <th data-key="age">Age <span class="arrow"></span></th>
+              <th data-key="device">Device <span class="arrow"></span></th>
+              <th data-key="vision_group">Vision Group <span class="arrow"></span></th>
+              <th data-key="created_at">Date <span class="arrow"></span></th>
+              <th data-key="tasks_done">Tasks <span class="arrow"></span></th>
+              <th data-key="skipped">Skipped <span class="arrow"></span></th>
+              <th data-key="score">Score <span class="arrow"></span></th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            <% rows.forEach(row => { %>
+              <tr class="expandable" data-id="<%= row.id %>">
+                <td><strong><%= row.participant_id %></strong></td>
+                <td><%= row.age %></td>
+                <td><%= row.device %></td>
+                <td><%= row.vision_group %></td>
+                <td><%= row.created_at %></td>
+                <td><%= row.tasks_done %>/<%= tasks.length %></td>
+                <td>
+                  <% if (row.skipped) { %>
+                    <span class="badge skip"><%= row.skipped %></span>
+                  <% } else { %>—<% } %>
+                </td>
+                <td>
+                  <% if (row.scored_total > 0) { %>
+                    <span class="badge ok"><%= row.score %>/<%= row.scored_total %></span>
+                  <% } else { %>
+                    <span class="badge none">—</span>
+                  <% } %>
+                </td>
+                <td><a href="/data/participant/<%= row.id %>" class="btn small secondary">View</a></td>
+              </tr>
+              <tr class="detail-row" style="display:none;" data-parent="<%= row.id %>">
+                <td colspan="9">
+                  <div class="detail-inner">
+                    <table class="table">
+                      <thead><tr><th>#</th><th>Task</th><th>Response</th><th>Result</th></tr></thead>
+                      <tbody>
+                        <% tasks.forEach(t => { const c = row.tasks[t.n]; %>
+                          <tr>
+                            <td><%= t.n %></td>
+                            <td><%= t.name %></td>
+                            <td><%= c.response || '—' %></td>
+                            <td>
+                              <% if (c.skipped) { %><span class="badge skip">Skipped</span>
+                              <% } else if (c.correct === null) { %><span class="badge none">—</span>
+                              <% } else if (c.correct) { %><span class="badge ok">Correct</span>
+                              <% } else { %><span class="badge no">Incorrect</span><% } %>
+                            </td>
+                          </tr>
+                        <% }); %>
+                      </tbody>
+                    </table>
+                  </div>
+                </td>
+              </tr>
+            <% }); %>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  <% } else { %>
+    <div class="card empty">
+      <p style="font-size:40px;margin-bottom:10px;">📭</p>
+      <p>No data yet.</p>
+      <p style="margin-top:12px;"><a href="/">Run the first assessment →</a></p>
+    </div>
+  <% } %>
+</div>
+
+<script src="/socket.io/socket.io.js"></script>
+<script src="/js/data.js"></script>
+<%- include('partials/footer') %>

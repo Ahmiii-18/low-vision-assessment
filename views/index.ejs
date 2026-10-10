@@ -1,0 +1,59 @@
+<%- include('partials/head', { title: 'Participant & Study Settings' }) %>
+<div class="page-center">
+  <div class="card">
+    <div class="row-between">
+      <h1>Participant &amp; Study Settings</h1>
+      <button class="btn-icon" onclick="toggleTheme()" title="Toggle dark mode">🌓</button>
+    </div>
+
+    <% if (flashed) { %>
+      <div class="flash error"><%= flashed %></div>
+    <% } %>
+
+    <form method="POST" action="/participants">
+      <label for="participantId">Participant ID</label>
+      <input type="text" id="participantId" name="participantId" placeholder="e.g., LV001" required autofocus>
+
+      <label for="age">Age</label>
+      <input type="number" id="age" name="age" min="1" max="130" required>
+
+      <label for="device">Device</label>
+      <div class="select-wrapper">
+        <select id="device" name="device">
+          <option value="Tablet">Tablet</option>
+          <option value="Phone">Phone</option>
+          <option value="Desktop">Desktop</option>
+        </select>
+      </div>
+
+      <label for="visionGroup">Eye/vision group</label>
+      <div class="select-wrapper">
+        <select id="visionGroup" name="visionGroup">
+          <option value="Low vision">Low vision</option>
+          <option value="Normal vision">Normal vision</option>
+          <option value="Blind">Blind</option>
+        </select>
+      </div>
+
+      <div class="info-box">
+        <strong>Study setup:</strong> Keep device, viewing distance, room illumination,
+        screen brightness and participant instructions standardized according to your
+        approved protocol.
+      </div>
+
+      <button type="submit" class="btn primary">Start <%= totalTasks %>-Task Assessment</button>
+    </form>
+
+    <div class="btn-grid">
+      <a href="/data" class="btn secondary">📊 View Data</a>
+      <a href="/export/excel" class="btn secondary">📗 Excel</a>
+    </div>
+    <a href="/export" class="btn secondary">📄 Export CSV (All)</a>
+
+    <div class="warning-box">
+      This prototype is for research development only. Its tasks, thresholds and scores
+      must be scientifically validated before clinical use.
+    </div>
+  </div>
+</div>
+<%- include('partials/footer') %>

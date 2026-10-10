@@ -1,0 +1,13 @@
+<%- include('partials/head', { title: 'Data Login' }) %>
+<div class="page-center">
+  <div class="card">
+    <h1>Data Viewer Locked</h1>
+    <p class="sub">Enter PIN to continue.</p>
+    <% if (error) { %><div class="flash error"><%= error %></div><% } %>
+    <form method="POST" action="/login">
+      <input type="password" name="pin" placeholder="PIN" autofocus required>
+      <button type="submit" class="btn primary">Unlock</button>
+    </form>
+  </div>
+</div>
+<%- include('partials/footer') %>

@@ -1,0 +1,29 @@
+<%- include('partials/head', { title: `Task ${taskNum} of ${total}` }) %>
+<div class="page-center">
+  <div class="card">
+    <div class="meta">
+      <span>Participant <%= participant.participant_id %></span>
+      <span>Task <%= taskNum %> / <%= total %></span>
+    </div>
+    <div class="progress-bar">
+      <div class="progress-fill" style="width:<%= progress %>%"></div>
+    </div>
+
+    <h2><%= task.name %></h2>
+    <p class="prompt"><%= task.prompt %></p>
+
+    <div id="stage"></div>
+    <div id="controls"></div>
+
+    <a href="/" class="quit">Quit assessment</a>
+  </div>
+</div>
+
+<script>
+  window.__TASK__  = <%- taskJson %>;
+  window.__PID__   = <%= participant.id %>;
+  window.__NUM__   = <%= taskNum %>;
+  window.__TOTAL__ = <%= total %>;
+</script>
+<script src="/js/tasks.js"></script>
+<%- include('partials/footer') %>
