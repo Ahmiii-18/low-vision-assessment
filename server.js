@@ -38,8 +38,8 @@ app.set('trust proxy', 1);
 app.use(helmet({ contentSecurityPolicy: false }));
 app.use(compression());
 app.use(morgan(IS_PROD ? 'combined' : 'dev'));
-app.use(express.json({ limit: '1mb' }));
-app.use(express.urlencoded({ extended: true, limit: '1mb' }));
+app.use(express.json({ limit: '2mb' }));
+app.use(express.urlencoded({ extended: true, limit: '2mb' }));
 app.use(express.static(path.join(__dirname, 'public'), { maxAge: '1h' }));
 
 app.use(session({
@@ -65,7 +65,7 @@ const broadcast = (event, data) => io.emit(event, data);
 
 const submitLimiter = rateLimit({
   windowMs: 60 * 1000,
-  max: 200,
+  max: 300,
   standardHeaders: true,
   legacyHeaders: false,
 });
@@ -210,7 +210,16 @@ app.post(
   '/api/submit_task',
   submitLimiter,
   ah(async (req, res) => {
-    const { participant_id, task_number, response, data, duration_ms, skipped } = req.body;
+    const {
+      participant_id,
+      task_number,
+      response,
+      data,
+      duration_ms,
+      skipped,
+      resolved_config,
+    } = req.body;
+
     const pid = parseInt(participant_id, 10);
     const tn = parseInt(task_number, 10);
 
@@ -232,9 +241,17 @@ app.post(
     }
 
     const isSkipped = Boolean(skipped);
-    const correct = scoreTask(task, response, isSkipped);
     const respStr = String(response ?? '').slice(0, 2000);
-    const dataStr = data ? JSON.stringify(data).slice(0, 10000) : null;
+
+    // Score against the resolved config the client sent back,
+    // so randomized stimuli are scored correctly.
+    const correct = scoreTask(task, respStr, isSkipped, resolved_config);
+
+    // Merge resolved config into the stored data payload for full traceability
+    const fullData = Object.assign({}, data || {}, {
+      resolved_config: resolved_config || null,
+    });
+    const dataStr = JSON.stringify(fullData).slice(0, 10000);
 
     const { rows } = await db.query(
       `INSERT INTO task_responses
@@ -525,13 +542,16 @@ app.get(
       ];
       for (const t of TASKS) {
         const r = byNum[t.n];
-        if (r) row.push(
-          csvEsc(r.response || ''),
-          r.correct === null ? '' : Number(r.correct),
-          Number(Boolean(r.skipped)),
-          r.duration_ms ?? ''
-        );
-        else row.push('', '', '', '');
+        if (r) {
+          row.push(
+            csvEsc(r.response || ''),
+            r.correct === null ? '' : Number(r.correct),
+            Number(Boolean(r.skipped)),
+            r.duration_ms ?? ''
+          );
+        } else {
+          row.push('', '', '', '');
+        }
       }
       res.write(row.join(',') + '\n');
     }

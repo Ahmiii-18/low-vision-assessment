@@ -12,6 +12,17 @@
   const stage    = document.getElementById('stage');
   const controls = document.getElementById('controls');
 
+  /* ---------- deterministic RNG seeded by participant + task ---------- */
+  function makeRng(seed) {
+    let s = seed >>> 0;
+    return function () {
+      s = (s * 1664525 + 1013904223) >>> 0;
+      return s / 4294967296;
+    };
+  }
+  const rng = makeRng(PID * 1000 + TASK_NUM);
+  const pick = (arr) => arr[Math.floor(rng() * arr.length)];
+
   function el(html) {
     const d = document.createElement('div');
     d.innerHTML = html.trim();
@@ -21,40 +32,8 @@
   function clearControls() { controls.innerHTML = ''; }
   function setStageClass(c){ stage.className = c || ''; }
 
-  /* ---------------- offline queue ---------------- */
-  const QUEUE_KEY = 'lv_pending_submissions';
-
-  function queueSubmission(payload) {
-    try {
-      const q = JSON.parse(localStorage.getItem(QUEUE_KEY) || '[]');
-      q.push(payload);
-      localStorage.setItem(QUEUE_KEY, JSON.stringify(q));
-    } catch (_) {}
-  }
-
-  function flushQueue() {
-    try {
-      const q = JSON.parse(localStorage.getItem(QUEUE_KEY) || '[]');
-      if (!q.length) return;
-      const remaining = [];
-      Promise.all(q.map(p =>
-        fetch('/api/submit_task', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(p),
-        })
-          .then(r => r.ok ? null : remaining.push(p))
-          .catch(() => remaining.push(p))
-      )).then(() => {
-        localStorage.setItem(QUEUE_KEY, JSON.stringify(remaining));
-      });
-    } catch (_) {}
-  }
-  window.addEventListener('online', flushQueue);
-  flushQueue();
-
-  /* ---------------- submit ---------------- */
-  function submitTask(response, data, opts) {
+  /* ---------- submit ---------- */
+  function submitTask(response, data, opts, resolvedConfig) {
     if (!submitAllowed) return;
     submitAllowed = false;
 
@@ -65,6 +44,7 @@
       data: data || {},
       duration_ms: Date.now() - START,
       skipped: !!(opts && opts.skipped),
+      resolved_config: resolvedConfig || null,   // lets server score correctly
     };
 
     fetch('/api/submit_task', {
@@ -76,21 +56,17 @@
         const txt = await r.text();
         if (!r.ok) throw new Error(`HTTP ${r.status} — ${txt.slice(0, 300)}`);
         try { return JSON.parse(txt); }
-        catch { throw new Error('Bad JSON from server: ' + txt.slice(0, 300)); }
+        catch { throw new Error('Bad JSON: ' + txt.slice(0, 300)); }
       })
       .then((d) => {
         if (d.ok && d.next) window.location.href = d.next;
         else throw new Error(d.error || 'unknown error');
       })
       .catch((err) => {
-        console.error('[submit_task]', err);
-        queueSubmission(payload);
+        console.error('[submit]', err);
         submitAllowed = true;
-        if (confirm('Connection issue. Saved locally — will retry when back online.\n\nAdvance to next task anyway?')) {
-          const next = TASK_NUM + 1;
-          window.location.href = next <= TOTAL
-            ? `/assessment/${PID}/task/${next}`
-            : `/assessment/${PID}/complete`;
+        if (confirm('Connection issue. Retry now?\n\n' + err.message)) {
+          submitTask(response, data, opts, resolvedConfig);
         }
       });
   }
@@ -100,12 +76,27 @@
     submitTask('SKIPPED', { skipped: true }, { skipped: true });
   }
 
+  /* ---------- helper: choice buttons that auto-advance ---------- */
+  function choiceButtons(options, onPick, opts) {
+    const wrap = el(`<div class="options ${options.length === 2 ? 'two' : ''}"></div>`);
+    options.forEach((opt) => {
+      const b = el(`<button type="button" class="choice-btn">${opt}</button>`);
+      b.onclick = () => {
+        wrap.querySelectorAll('.choice-btn').forEach(x => x.classList.remove('selected'));
+        b.classList.add('selected');
+        onPick(opt);
+      };
+      wrap.appendChild(b);
+    });
+    return wrap;
+  }
+
   /* ================================================================
      RENDERERS
      ================================================================ */
   const RENDERERS = {
 
-    /* 1. Snellen Acuity */
+    /* 1. Snellen Acuity — auto-advance on tap */
     snellen() {
       const cfg = TASK.config;
       let round = 0;
@@ -113,7 +104,7 @@
 
       function showRound() {
         clearStage(); clearControls();
-        const dir   = ['up','right','down','left'][Math.floor(Math.random() * 4)];
+        const dir   = ['up','right','down','left'][Math.floor(rng() * 4)];
         const angle = { up:270, right:0, down:90, left:180 }[dir];
         const size  = cfg.sizes[Math.min(round, cfg.sizes.length - 1)];
 
@@ -153,7 +144,7 @@
       showRound();
     },
 
-    /* 2. Contrast Sensitivity */
+    /* 2. Contrast Sensitivity — proper Michelson, auto-advance on YES/NO */
     contrast() {
       const cfg = TASK.config;
       let idx = 0;
@@ -161,42 +152,37 @@
 
       function showLevel() {
         clearStage(); clearControls();
-        const c    = cfg.levels[idx];
-        const gray = Math.round(255 * (1 - c * 0.9));
+        const pct = cfg.levels[idx];               // 100 = black, 2 = nearly white
+        const gray = Math.round(255 * (1 - pct / 100));
 
         stage.appendChild(el(
           `<div class="contrast-letter" style="font-size:180px; color:rgb(${gray},${gray},${gray});">${cfg.letter}</div>`
         ));
 
-        const opts = el(`
-          <div class="options two">
-            <label><input type="radio" name="vis" value="Yes">YES</label>
-            <label><input type="radio" name="vis" value="No">NO</label>
-          </div>
-        `);
-        const btn = el(`<button class="btn primary">Next</button>`);
-
-        btn.onclick = () => {
-          const picked = opts.querySelector('input:checked');
-          if (!picked) return;
-          results.push({ level: c, answer: picked.value });
+        const opts = choiceButtons(['YES', 'NO'], (picked) => {
+          results.push({ contrast_pct: pct, answer: picked });
           idx++;
           if (idx >= cfg.levels.length) {
-            const yesCount = results.filter((r) => r.answer === 'Yes').length;
-            const lastYes  = results.filter((r) => r.answer === 'Yes').pop();
-            submitTask(`${yesCount}/${results.length}`,
-              { results, lowest_visible_contrast: lastYes ? lastYes.level : 0 });
-          } else showLevel();
-        };
+            const yesCount = results.filter(r => r.answer === 'YES').length;
+            const lastYes  = results.filter(r => r.answer === 'YES').pop();
+            submitTask(`${yesCount}/${results.length}`, {
+              results,
+              lowest_visible_contrast_pct: lastYes ? lastYes.contrast_pct : 0,
+            });
+          } else {
+            setTimeout(showLevel, 200);
+          }
+        });
         controls.appendChild(opts);
-        controls.appendChild(btn);
       }
       showLevel();
     },
 
-    /* 3. Ishihara */
+    /* 3. Ishihara — randomized number per participant */
     ishihara() {
       clearStage(); clearControls();
+      const number = pick(TASK.config.pool);
+
       const size = 300;
       const canvas = document.createElement('canvas');
       canvas.width = canvas.height = size;
@@ -221,7 +207,7 @@
       octx.font = 'bold 180px Arial';
       octx.textAlign = 'center';
       octx.textBaseline = 'middle';
-      octx.fillText(TASK.config.number, size/2, size/2 + 10);
+      octx.fillText(number, size/2, size/2 + 10);
       const imgData = octx.getImageData(0, 0, size, size).data;
 
       const fg = ['#27ae60','#2ecc71','#16a085','#1abc9c'];
@@ -238,12 +224,16 @@
 
       const input = el(`<input type="text" placeholder="Type the number you see" autofocus>`);
       const btn   = el(`<button class="btn primary">Submit</button>`);
-      btn.onclick = () => submitTask(input.value.trim(), { expected: TASK.config.number });
+      btn.onclick = () => submitTask(input.value.trim(),
+                                     { expected: number },
+                                     null,
+                                     { number });
       controls.appendChild(input);
       controls.appendChild(btn);
+      input.addEventListener('keydown', e => { if (e.key === 'Enter') btn.click(); });
     },
 
-    /* 4. Amsler Grid */
+    /* 4. Amsler Grid — unchanged */
     amsler() {
       clearStage(); clearControls();
       const N = 12;
@@ -275,7 +265,7 @@
       controls.appendChild(btn);
     },
 
-    /* 5. Visual Field */
+    /* 5. Visual Field — unchanged */
     visual_field() {
       const cfg = TASK.config;
       let round = 0;
@@ -342,7 +332,7 @@
       nextRound();
     },
 
-    /* 6. Motion Detection */
+    /* 6. Motion Detection — auto-advance on tap */
     motion() {
       const cfg = TASK.config;
       let round = 0;
@@ -351,7 +341,7 @@
 
       function showRound() {
         clearStage(); clearControls();
-        const dir = dirs[Math.floor(Math.random() * 4)];
+        const dir = dirs[Math.floor(rng() * 4)];
         const dot = el(
           `<div style="position:absolute; width:22px; height:22px; background:#00c9a7;
                        border-radius:50%; left:50%; top:50%;
@@ -367,33 +357,31 @@
           dot.style.transform = `translate(calc(-50% + ${dx}px), calc(-50% + ${dy}px))`;
         }, 300);
 
-        const opts = el(`
-          <div class="options two">
-            ${dirs.map((d) => `<label><input type="radio" name="dir" value="${d}">${d.toUpperCase()}</label>`).join('')}
-          </div>
-        `);
-        const btn = el(`<button class="btn primary">Next</button>`);
-
-        btn.onclick = () => {
-          const picked = opts.querySelector('input:checked');
-          if (!picked) return;
-          results.push({ direction: dir, picked: picked.value, correct: picked.value === dir });
-          round++;
-          if (round >= cfg.rounds) {
-            const hits = results.filter((r) => r.correct).length;
-            submitTask(`${hits}/${cfg.rounds}`, { results });
-          } else showRound();
-        };
+        const opts = choiceButtons(
+          ['LEFT', 'RIGHT', 'UP', 'DOWN'],
+          (picked) => {
+            const p = picked.toLowerCase();
+            results.push({ direction: dir, picked: p, correct: p === dir });
+            round++;
+            if (round >= cfg.rounds) {
+              const hits = results.filter((r) => r.correct).length;
+              submitTask(`${hits}/${cfg.rounds}`, { results });
+            } else {
+              setTimeout(showRound, 200);
+            }
+          }
+        );
+        opts.classList.add('two');
         controls.appendChild(opts);
-        controls.appendChild(btn);
       }
       showRound();
     },
 
-    /* 7. Reading Speed */
+    /* 7. Reading Speed — randomized sentence */
     reading() {
       clearStage(); clearControls();
-      const text = TASK.config.text;
+      const text = pick(TASK.config.pool);
+
       stage.appendChild(el(
         `<div style="font-size:26px; line-height:1.5; padding:16px; text-align:center;">${text}</div>`
       ));
@@ -409,13 +397,17 @@
       const btn   = el(`<button class="btn primary">Submit</button>`);
       btn.onclick = () => {
         clearInterval(tick);
-        submitTask(input.value, { expected: text, read_time_ms: Date.now() - t0 });
+        submitTask(input.value,
+                   { expected: text, read_time_ms: Date.now() - t0 },
+                   null,
+                   { text });
       };
+      input.addEventListener('keydown', e => { if (e.key === 'Enter') btn.click(); });
       controls.appendChild(input);
       controls.appendChild(btn);
     },
 
-    /* 8. Glare Sensitivity */
+    /* 8. Glare Sensitivity — unchanged */
     glare() {
       clearStage(); clearControls();
       setStageClass('dark');
@@ -433,9 +425,11 @@
       controls.appendChild(btn);
     },
 
-    /* 9. Face Recognition */
+    /* 9. Face Recognition — randomized emotion */
     face() {
       clearStage(); clearControls();
+      const emotion = pick(TASK.config.pool);
+
       const faces = {
         happy:    `<circle cx="100" cy="100" r="70" fill="#ffe0b2"/><circle cx="75" cy="85" r="7" fill="#000"/><circle cx="125" cy="85" r="7" fill="#000"/><path d="M60 120 Q100 165 140 120" stroke="#000" stroke-width="6" fill="none" stroke-linecap="round"/>`,
         sad:      `<circle cx="100" cy="100" r="70" fill="#ffe0b2"/><circle cx="75" cy="85" r="7" fill="#000"/><circle cx="125" cy="85" r="7" fill="#000"/><path d="M60 145 Q100 110 140 145" stroke="#000" stroke-width="6" fill="none" stroke-linecap="round"/>`,
@@ -443,7 +437,7 @@
         surprised:`<circle cx="100" cy="100" r="70" fill="#ffe0b2"/><circle cx="75" cy="85" r="8" fill="#000"/><circle cx="125" cy="85" r="8" fill="#000"/><ellipse cx="100" cy="135" rx="14" ry="18" fill="#000"/>`,
         neutral:  `<circle cx="100" cy="100" r="70" fill="#ffe0b2"/><circle cx="75" cy="85" r="7" fill="#000"/><circle cx="125" cy="85" r="7" fill="#000"/><line x1="75" y1="135" x2="125" y2="135" stroke="#000" stroke-width="6" stroke-linecap="round"/>`,
       };
-      stage.innerHTML = `<svg width="200" height="200" viewBox="0 0 200 200">${faces[TASK.config.emotion] || faces.neutral}</svg>`;
+      stage.innerHTML = `<svg width="200" height="200" viewBox="0 0 200 200">${faces[emotion] || faces.neutral}</svg>`;
 
       const opts = el(`<div class="options">${
         TASK.config.options.map((o) =>
@@ -453,15 +447,17 @@
       btn.onclick = () => {
         const p = opts.querySelector('input:checked');
         if (!p) return;
-        submitTask(p.value, { expected: TASK.config.emotion });
+        submitTask(p.value, { expected: emotion }, null, { emotion });
       };
       controls.appendChild(opts);
       controls.appendChild(btn);
     },
 
-    /* 10. Object Recognition */
+    /* 10. Object Recognition — randomized shape */
     object() {
       clearStage(); clearControls();
+      const shape = pick(TASK.config.pool);
+
       const shapes = {
         house: `<rect x="30" y="80" width="140" height="90" fill="#c0865b"/><polygon points="20,80 100,20 180,80" fill="#a04a4a"/><rect x="85" y="120" width="30" height="50" fill="#7a5a3a"/>`,
         tree:  `<rect x="90" y="120" width="20" height="60" fill="#7a5a3a"/><circle cx="100" cy="90" r="50" fill="#3a8a4a"/><circle cx="70" cy="110" r="30" fill="#4aa05a"/><circle cx="130" cy="110" r="30" fill="#4aa05a"/>`,
@@ -469,7 +465,7 @@
         boat:  `<polygon points="40,120 160,120 140,160 60,160" fill="#a06a3a"/><rect x="95" y="40" width="6" height="80" fill="#333"/><polygon points="100,45 100,115 155,115" fill="#fff"/>`,
         star:  `<polygon points="100,20 120,80 185,80 130,120 150,180 100,145 50,180 70,120 15,80 80,80" fill="#f5c542"/>`,
       };
-      stage.innerHTML = `<svg width="200" height="200" viewBox="0 0 200 200">${shapes[TASK.config.shape] || shapes.star}</svg>`;
+      stage.innerHTML = `<svg width="200" height="200" viewBox="0 0 200 200">${shapes[shape] || shapes.star}</svg>`;
 
       const opts = el(`<div class="options">${
         TASK.config.options.map((o) =>
@@ -479,16 +475,16 @@
       btn.onclick = () => {
         const p = opts.querySelector('input:checked');
         if (!p) return;
-        submitTask(p.value, { expected: TASK.config.shape });
+        submitTask(p.value, { expected: shape }, null, { shape });
       };
       controls.appendChild(opts);
       controls.appendChild(btn);
     },
 
-    /* 11. Depth Perception */
+    /* 11. Depth Perception — randomized closer side */
     depth() {
       clearStage(); clearControls();
-      const closer = Math.random() < 0.5 ? 'Left' : 'Right';
+      const closer = rng() < 0.5 ? 'Left' : 'Right';
       const lBehind = closer === 'Left';
 
       stage.innerHTML = `
@@ -507,19 +503,19 @@
       btn.onclick = () => {
         const p = opts.querySelector('input:checked');
         if (!p) return;
-        submitTask(p.value, { expected: closer, closer });
+        submitTask(p.value, { expected: closer }, null, { closer });
       };
       controls.appendChild(opts);
       controls.appendChild(btn);
     },
 
-    /* 12. Text Tracking */
+    /* 12. Text Tracking — unchanged (already randomized) */
     tracking() {
       clearStage(); clearControls();
       const words = ['vision','acuity','contrast','peripheral','macular','retina','optic','focus','retinal','glaucoma'];
-      const target = words[Math.floor(Math.random() * words.length)];
-      const seq = Array(9).fill(null).map(() => words[Math.floor(Math.random() * words.length)]);
-      const targetIdx = 2 + Math.floor(Math.random() * 5);
+      const target = words[Math.floor(rng() * words.length)];
+      const seq = Array(9).fill(null).map(() => words[Math.floor(rng() * words.length)]);
+      const targetIdx = 2 + Math.floor(rng() * 5);
       seq[targetIdx] = target;
 
       const display = el(
@@ -539,46 +535,61 @@
 
           const input = el(`<input type="text" placeholder="Type the highlighted word" autofocus>`);
           const btn   = el(`<button class="btn primary">Submit</button>`);
-          btn.onclick = () => submitTask(input.value.trim().toLowerCase(), { expected: target });
+          btn.onclick = () => submitTask(input.value.trim().toLowerCase(),
+                                         { expected: target },
+                                         null,
+                                         { text: target });
+          input.addEventListener('keydown', e => { if (e.key === 'Enter') btn.click(); });
           controls.appendChild(input);
           controls.appendChild(btn);
         }
       }, 900);
     },
 
-    /* 13. Sign Reading */
+    /* 13. Sign Reading — randomized sign */
     sign() {
       clearStage(); clearControls();
-      stage.innerHTML = `<div class="sign-visual">${TASK.config.text}</div>`;
+      const text = pick(TASK.config.pool);
+      stage.innerHTML = `<div class="sign-visual">${text}</div>`;
 
       const input = el(`<input type="text" placeholder="Type the text on the sign" autofocus>`);
       const btn   = el(`<button class="btn primary">Submit</button>`);
-      btn.onclick = () => submitTask(input.value.trim(), { expected: TASK.config.text });
+      btn.onclick = () => submitTask(input.value.trim(),
+                                     { expected: text },
+                                     null,
+                                     { text });
+      input.addEventListener('keydown', e => { if (e.key === 'Enter') btn.click(); });
       controls.appendChild(input);
       controls.appendChild(btn);
     },
 
-    /* 14. Medication Label */
+    /* 14. Medication Label — randomized drug and dosage */
     label() {
       clearStage(); clearControls();
+      const item = pick(TASK.config.pool);
+
       stage.innerHTML = `
         <div class="label-visual">
-          <div class="name">IBUPROFEN TABLETS</div>
-          <div class="dose">Each tablet contains 200 mg of active ingredient.</div>
-          <div class="dose">Directions: Take one tablet every 6–8 hours as needed.</div>
+          <div class="name">${item.drug}</div>
+          <div class="dose">Each tablet contains ${item.dose} of active ingredient.</div>
+          <div class="dose">Directions: ${item.directions}</div>
         </div>`;
 
       const input = el(`<input type="text" placeholder="What dosage is on the label?" autofocus>`);
       const btn   = el(`<button class="btn primary">Submit</button>`);
-      btn.onclick = () => submitTask(input.value.trim(), { expected: '200 mg' });
+      btn.onclick = () => submitTask(input.value.trim(),
+                                     { expected: item.dose },
+                                     null,
+                                     { dose: item.dose });
+      input.addEventListener('keydown', e => { if (e.key === 'Enter') btn.click(); });
       controls.appendChild(input);
       controls.appendChild(btn);
     },
 
-    /* 15. Obstacle Detection */
+    /* 15. Obstacle Detection — randomized presence */
     obstacle() {
       clearStage(); clearControls();
-      const hasObs = TASK.config.has_obstacle;
+      const hasObs = rng() < 0.5;
       const obs = hasObs ? `<rect x="120" y="140" width="60" height="40" fill="#7a3a1a"/>` : '';
 
       stage.innerHTML = `
@@ -598,13 +609,16 @@
       btn.onclick = () => {
         const p = opts.querySelector('input:checked');
         if (!p) return;
-        submitTask(p.value, { expected: hasObs ? 'Yes' : 'No', has_obstacle: hasObs });
+        submitTask(p.value,
+                   { expected: hasObs ? 'Yes' : 'No' },
+                   null,
+                   { has_obstacle: hasObs });
       };
       controls.appendChild(opts);
       controls.appendChild(btn);
     },
 
-    /* 16. Scene Description */
+    /* 16. Scene Description — unchanged */
     scene() {
       clearStage(); clearControls();
       stage.innerHTML = `
@@ -621,11 +635,12 @@
       const input = el(`<input type="text" placeholder="Describe what you see" autofocus>`);
       const btn   = el(`<button class="btn primary">Submit</button>`);
       btn.onclick = () => submitTask(input.value.trim(), { scene: 'house_tree_sun' });
+      input.addEventListener('keydown', e => { if (e.key === 'Enter') btn.click(); });
       controls.appendChild(input);
       controls.appendChild(btn);
     },
 
-    /* 17. Peripheral Awareness */
+    /* 17. Peripheral — auto-advance on tap */
     peripheral() {
       const cfg = TASK.config;
       let round = 0;
@@ -638,8 +653,8 @@
           `<div style="position:absolute; font-size:36px; color:#00c9a7;">+</div>`
         ));
 
-        const dir = ['left', 'right'][Math.floor(Math.random() * 2)];
-        const y   = 60 + Math.random() * (stage.clientHeight - 120);
+        const dir = rng() < 0.5 ? 'left' : 'right';
+        const y   = 60 + rng() * (stage.clientHeight - 120);
         const x   = dir === 'left' ? 30 : stage.clientWidth - 60;
         const shape = el(
           `<div style="position:absolute; left:${x}px; top:${y}px; width:28px; height:28px;
@@ -652,30 +667,24 @@
           setTimeout(() => { shape.style.opacity = '0'; }, 250);
         }, 500);
 
-        const opts = el(`
-          <div class="options two">
-            <label><input type="radio" name="p" value="Left">LEFT</label>
-            <label><input type="radio" name="p" value="Right">RIGHT</label>
-          </div>
-        `);
-        const btn = el(`<button class="btn primary">Next</button>`);
-        btn.onclick = () => {
-          const p = opts.querySelector('input:checked');
-          if (!p) return;
-          results.push({ side: dir, picked: p.value, correct: p.value.toLowerCase() === dir });
+        const opts = choiceButtons(['LEFT', 'RIGHT'], (picked) => {
+          const p = picked.toLowerCase();
+          results.push({ side: dir, picked: p, correct: p === dir });
           round++;
           if (round >= cfg.rounds) {
             const hits = results.filter((r) => r.correct).length;
             submitTask(`${hits}/${cfg.rounds}`, { results });
-          } else next();
-        };
+          } else {
+            setTimeout(next, 200);
+          }
+        });
+        opts.classList.add('two');
         controls.appendChild(opts);
-        controls.appendChild(btn);
       }
       next();
     },
 
-    /* 18. Daily Task */
+    /* 18. Daily Task — unchanged */
     daily() {
       clearStage(); clearControls();
       const bottles = [
@@ -685,7 +694,7 @@
         { name: 'Aspirin',     dose: '75 mg'  },
         { name: 'Aspirin',     dose: '100 mg' },
         { name: 'Amoxicillin', dose: '250 mg' },
-      ].sort(() => Math.random() - 0.5);
+      ].sort(() => rng() - 0.5);
 
       const wrap = el(
         `<div style="display:grid; grid-template-columns:repeat(3,1fr); gap:12px; padding:12px;"></div>`
@@ -724,7 +733,6 @@
     controls.appendChild(btn);
   }
 
-  /* Always-visible Skip button */
   const skipBtn = el(`<button class="btn ghost" style="margin-top:10px;">Skip this task →</button>`);
   skipBtn.onclick = skipTask;
   controls.appendChild(skipBtn);
