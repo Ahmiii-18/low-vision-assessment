@@ -285,7 +285,7 @@ app.post(
       correct === null ? '' : (correct ? 'Yes' : 'No'),
       isSkipped ? 'Yes' : 'No',
       duration_ms ?? '',
-    ]);
+    ], { isLastRow: tn === TOTAL_TASKS });
 
     // Broadcast to dashboards
     broadcast('task:new', {
